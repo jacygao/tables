@@ -1,0 +1,23 @@
+# example table config
+- title: "example"
+  table_name: "integration-test"
+  primary_key: "id"
+  sort_key: "sid"
+  sort_key_type: "S"
+  read_throughput: 10
+  write_throughput: 10
+  indexes:
+    - index_name: "example-index"
+      primary_key: "index_id"
+      primary_key_type: "S"
+      sort_key: "document_type"
+      sort_key_type: "N"
+      read_throughput: 10
+      write_throughput: 10
+      projection_fields:
+        - "sid"
+        - "created"
+        - "expiry"
+  ttl:
+    attribute_name: "expiry"
+    enabled: true
