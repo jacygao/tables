@@ -240,15 +240,33 @@ func TestDiffGSI(t *testing.T) {
 	if len(res.Diff) > 0 {
 		t.Fatalf("expected empty diff but got %s", res.Diff)
 	}
+	if !res.CanMigrate {
+		t.Fatal("expected CanMigrate true but got false")
+	}
+	if len(res.GSIInput) > 0 {
+		t.Fatalf("expected no GSIInput but got %v", res.GSIInput)
+	}
 
 	res = DiffGSI(obj3, obj1)
 	if len(res.Diff) == 0 {
 		t.Fatalf("expected empty diff but got %s", res.Diff)
 	}
+	if !res.CanMigrate {
+		t.Fatal("expected CanMigrate true but got false")
+	}
+	if len(res.GSIInput) == 0 {
+		t.Fatal("expected valid GSIInput but got nil")
+	}
 
 	res = DiffGSI(obj4, obj1)
 	if len(res.Diff) == 0 {
 		t.Fatal("expected valid diff but got empty")
+	}
+	if res.CanMigrate {
+		t.Fatal("expected CanMigrate false but got true")
+	}
+	if len(res.GSIInput) > 0 {
+		t.Fatalf("expected no GSIInput but got %v", res.GSIInput)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	MultiIndexUpdateRetryAttempts = 60
+	MultiIndexUpdateRetryAttempts = 100
 	MultiIndexUpdateRetryInterval = 2
 )
 
@@ -248,14 +248,14 @@ func (c *Controller) compare(tbl TableInfo) (*ValidationResult, error) {
 	if diffGSI != nil {
 		if len(diffGSI.Diff) > 0 {
 			diff = fmt.Sprintf("%v, GSI: %v", diff, diffGSI.Diff)
-			if len(diffGSI.GSIInput) == 0 {
-				// GSI can not be updated by Migrate
-				canMigrate = false
-			}
-			for _, input := range diffGSI.GSIInput {
-				updateTableInput := UpdateTableInputBase(tbl, c.env)
-				updateTableInput.GlobalSecondaryIndexUpdates = append(updateTableInput.GlobalSecondaryIndexUpdates, input)
-				result.UpdateTableInput = append(result.UpdateTableInput, updateTableInput)
+			canMigrate = diffGSI.CanMigrate
+
+			if canMigrate {
+				for _, input := range diffGSI.GSIInput {
+					updateTableInput := UpdateTableInputBase(tbl, c.env)
+					updateTableInput.GlobalSecondaryIndexUpdates = append(updateTableInput.GlobalSecondaryIndexUpdates, input)
+					result.UpdateTableInput = append(result.UpdateTableInput, updateTableInput)
+				}
 			}
 		}
 	}
@@ -329,10 +329,23 @@ func (c *Controller) createTable(ti TableInfo) error {
 }
 
 func (c *Controller) updateTTL(input *dynamodb.UpdateTimeToLiveInput) error {
-	if _, err := c.DynamoDB.UpdateTimeToLive(input); err != nil {
+	for i := 0; i < MultiIndexUpdateRetryAttempts; i++ {
+		_, err := c.DynamoDB.UpdateTimeToLive(input)
+		if err == nil {
+			return nil
+		}
+		// error not nil
+		aerr, ok := err.(awserr.Error)
+		if ok {
+			if aerr.Code() == dynamodb.ErrCodeResourceInUseException {
+				time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
+				continue
+			}
+			return err
+		}
 		return err
 	}
-	return nil
+	return ErrRequestWithMaxRetry
 }
 
 func (c *Controller) updateTable(ti TableInfo, input *dynamodb.UpdateTableInput) error {
@@ -344,11 +357,15 @@ func (c *Controller) updateTable(ti TableInfo, input *dynamodb.UpdateTableInput)
 		// error not nil
 		aerr, ok := err.(awserr.Error)
 		if ok {
-			if !(aerr.Code() == dynamodb.ErrCodeLimitExceededException) {
-				return err
+			if aerr.Code() == dynamodb.ErrCodeLimitExceededException {
+				time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
+				continue
 			}
-			time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
-			continue
+			if aerr.Code() == dynamodb.ErrCodeResourceInUseException {
+				time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
+				continue
+			}
+			return err
 		}
 		return err
 	}

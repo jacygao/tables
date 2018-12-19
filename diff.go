@@ -11,8 +11,9 @@ import (
 )
 
 type GSIResult struct {
-	GSIInput []*dynamodb.GlobalSecondaryIndexUpdate
-	Diff     string
+	GSIInput   []*dynamodb.GlobalSecondaryIndexUpdate
+	Diff       string
+	CanMigrate bool
 }
 
 // DiffTableDesc gets the diff string of two table descriptions
@@ -45,6 +46,7 @@ func DiffTableDesc(desc *dynamodb.TableDescription, input *dynamodb.CreateTableI
 // overridable GSIInputs are appended to the list.
 func DiffGSI(desc []*dynamodb.GlobalSecondaryIndexDescription, input []*dynamodb.GlobalSecondaryIndex) *GSIResult {
 	diff := ""
+	canMigrate := true
 	result := &GSIResult{}
 
 	if len(desc) == 0 && len(input) == 0 {
@@ -84,17 +86,16 @@ func DiffGSI(desc []*dynamodb.GlobalSecondaryIndexDescription, input []*dynamodb
 		}
 
 		if d := DiffIndexName(obj.IndexName, gsi.IndexName); len(d) > 0 {
+			canMigrate = false
 			diff = fmt.Sprintf("%v%v", diff, d)
 		}
 		if d := DiffKeySchema(obj.KeySchema, gsi.KeySchema); len(d) > 0 {
+			canMigrate = false
 			diff = fmt.Sprintf("%v%v", diff, d)
 		}
 		if d := DiffProjection(obj.Projection, gsi.Projection); len(d) > 0 {
+			canMigrate = false
 			diff = fmt.Sprintf("%v%v", diff, d)
-		}
-
-		if len(diff) > 0 {
-
 		}
 
 		if d := DiffProvisionedThroughput(obj.ProvisionedThroughput, &dynamodb.ProvisionedThroughput{
@@ -109,27 +110,11 @@ func DiffGSI(desc []*dynamodb.GlobalSecondaryIndexDescription, input []*dynamodb
 				},
 			})
 		}
-
-		if d := DiffIndexName(obj.IndexName, gsi.IndexName); len(d) > 0 {
-			diff = fmt.Sprintf("%v%v", diff, d)
-		}
-		if d := DiffKeySchema(obj.KeySchema, gsi.KeySchema); len(d) > 0 {
-			diff = fmt.Sprintf("%v%v", diff, d)
-		}
-		if d := DiffProjection(obj.Projection, gsi.Projection); len(d) > 0 {
-			diff = fmt.Sprintf("%v%v", diff, d)
-		}
-		if d := DiffProvisionedThroughput(obj.ProvisionedThroughput, &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits:  gsi.ProvisionedThroughput.ReadCapacityUnits,
-			WriteCapacityUnits: gsi.ProvisionedThroughput.WriteCapacityUnits,
-		}); len(d) > 0 {
-			diff = fmt.Sprintf("%v%v", diff, d)
-		}
 	}
 	if len(diff) > 0 {
 		result.Diff = diff
 	}
-
+	result.CanMigrate = canMigrate
 	return result
 }
 
