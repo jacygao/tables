@@ -119,12 +119,24 @@ func TestDiffProjection(t *testing.T) {
 		ProjectionType: aws.String("test"),
 	}
 
+	obj3 := &dynamodb.Projection{
+		NonKeyAttributes: []*string{
+			aws.String("test2"),
+			aws.String("test1"),
+		},
+		ProjectionType: aws.String("test"),
+	}
+
 	if diff := DiffProjection(obj1, obj1); diff != "" {
 		t.Fatalf("expected empty diff but got %s", diff)
 	}
 
 	if diff := DiffProjection(obj1, obj2); diff == "" {
 		t.Fatal("expected valid diff but got empty diff")
+	}
+
+	if diff := DiffProjection(obj1, obj3); diff != "" {
+		t.Fatalf("expected empty diff but got %s", diff)
 	}
 }
 

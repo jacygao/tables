@@ -19,10 +19,6 @@ type GSIResult struct {
 func DiffTableDesc(desc *dynamodb.TableDescription, input *dynamodb.CreateTableInput) string {
 	diff := ""
 
-	if d := DiffAttributeDefinitions(desc.AttributeDefinitions, input.AttributeDefinitions); len(d) > 0 {
-		diff = fmt.Sprintf("Attribute Definition: %v%v", diff, d)
-	}
-
 	if d := DiffKeySchema(desc.KeySchema, input.KeySchema); len(d) > 0 {
 		diff = fmt.Sprintf("Key Schedma: %v%v", diff, d)
 	}
@@ -84,7 +80,7 @@ func DiffGSI(desc []*dynamodb.GlobalSecondaryIndexDescription, input []*dynamodb
 
 			diff = fmt.Sprintf("missing index: %s", aws.StringValue(gsi.IndexName))
 			result.Diff = diff
-			break
+			continue
 		}
 
 		if d := DiffIndexName(obj.IndexName, gsi.IndexName); len(d) > 0 {
@@ -178,6 +174,12 @@ func DiffAttributeDefinitions(obj1, obj2 []*dynamodb.AttributeDefinition) string
 
 // DiffProject gets the diff string of two Projects objects
 func DiffProjection(p1, p2 *dynamodb.Projection) string {
+	sort.Slice(p1.NonKeyAttributes, func(i, j int) bool {
+		return aws.StringValue(p1.NonKeyAttributes[i]) < aws.StringValue(p1.NonKeyAttributes[j])
+	})
+	sort.Slice(p2.NonKeyAttributes, func(i, j int) bool {
+		return aws.StringValue(p2.NonKeyAttributes[i]) < aws.StringValue(p2.NonKeyAttributes[j])
+	})
 	return cmp.Diff(
 		p1,
 		p2,

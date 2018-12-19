@@ -14,20 +14,20 @@ type Logger interface {
 }
 
 // If no Logger implementation is provided, DefaultLogger is used for logging.
-type DefaultLogger struct{}
+type defaultLogger struct{}
 
-func (dl *DefaultLogger) Info(args ...interface{}) {
+func (dl *defaultLogger) Info(args ...interface{}) {
 	log.Print("INFO: " + fmt.Sprint(args...))
 }
 
-func (dl *DefaultLogger) Infof(template string, args ...interface{}) {
+func (dl *defaultLogger) Infof(template string, args ...interface{}) {
 	log.Print("INFO: " + fmt.Sprintf(template, args...))
 }
 
-func (dl *DefaultLogger) Error(args ...interface{}) {
+func (dl *defaultLogger) Error(args ...interface{}) {
 	log.Print("ERROR: " + fmt.Sprint(args...))
 }
 
-func (dl *DefaultLogger) Errorf(template string, args ...interface{}) {
+func (dl *defaultLogger) Errorf(template string, args ...interface{}) {
 	log.Print("ERROR: " + fmt.Sprintf(template, args...))
 }

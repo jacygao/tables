@@ -3,12 +3,23 @@ package tables
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 )
 
+const (
+	MultiIndexUpdateRetryAttempts = 60
+	MultiIndexUpdateRetryInterval = 2
+)
+
+// Controller is the main component of the package
+// DynamoDB is a valid DynamoDB Client instance that accesses the database and performs queries.
+// Tables contains a list of table definitions defined in the config file and unmarshalled via Load.
+// env is a Environment variable that is used as part of the table name prefixes.
+// Log takes an implementation of the Logger instance. If nil is passed, it takes the defaultLogger.
 type Controller struct {
 	DynamoDB *dynamodb.DynamoDB
 	// TableInfo gets loaded from config
@@ -28,7 +39,7 @@ type ValidationResult struct {
 	// If table schemas mismatch, such as updated table throughput or newly added GSI,
 	// UpdateTableInput will contain an input for updating the table.
 	// nil if schemas mismatches cannot be fixed by updating table.
-	UpdateTableInput *dynamodb.UpdateTableInput
+	UpdateTableInput []*dynamodb.UpdateTableInput
 	// If TTL is missing or the status of TTL is changed, UpdateTTLInput wil contain an input for
 	// updating the TTL.
 	UpdateTTLInput *dynamodb.UpdateTimeToLiveInput
@@ -53,19 +64,14 @@ type MigrationResult struct {
 // env represents Environment which is used as table prefix
 // You can optionally pass a logger implementation.
 // If no logging implementation is passed the default logger is used.
-func NewController(db *dynamodb.DynamoDB, env string, logger Logger) (*Controller, error) {
-	tableInfo, err := Load()
-	if err != nil {
-		return nil, err
-	}
-
+func NewController(db *dynamodb.DynamoDB, env string, logger Logger, data []TableInfo) (*Controller, error) {
 	if logger == nil {
-		logger = &DefaultLogger{}
+		logger = &defaultLogger{}
 	}
 
 	return &Controller{
 		DynamoDB: db,
-		Tables:   tableInfo,
+		Tables:   data,
 		env:      env,
 		Log:      logger,
 	}, nil
@@ -85,10 +91,13 @@ func (c *Controller) Validate() ([]*ValidationResult, error) {
 			defer wg.Done()
 			result, err := c.compare(tbl)
 			if err != nil {
+				result = &ValidationResult{}
 				result.CanMigrate = false
 				result.Error = err
+				c.Log.Errorf("Validate table [%s] with error: %v", tbl.TableName, result.Error)
+			} else {
+				c.Log.Infof("Validate table [%s] with diff: %v", tbl.TableName, result.Diff)
 			}
-			c.Log.Infof("Validate table [%s] with diff: %v", tbl.TableName, result.Diff)
 			resultChan <- result
 		}(tbl, resultChan)
 	}
@@ -96,21 +105,28 @@ func (c *Controller) Validate() ([]*ValidationResult, error) {
 	close(resultChan)
 
 	res := []*ValidationResult{}
-	isValid := true
+	isBackwardIncompatible := false
+	isDiff := false
+
 	for r := range resultChan {
 		res = append(res, r)
-		if r.Error != nil {
-			isValid = false
+		if !r.CanMigrate {
+			isBackwardIncompatible = true
 		}
 		if len(r.Diff) > 0 {
-			isValid = false
+			isDiff = true
 		}
 	}
 
-	if isValid {
-		return res, nil
+	if isBackwardIncompatible {
+		return res, ErrBackwardIncompatible
 	}
-	return res, ErrValidationFailed
+
+	if isDiff {
+		return res, ErrBackwardCompatible
+	}
+
+	return res, nil
 }
 
 // Migrate attempts to update table schemas based on given validation result.
@@ -153,18 +169,23 @@ func (c *Controller) migrate(r *ValidationResult) []error {
 	}
 	// migrate
 	if r.CreateTableInput != nil {
+		c.Log.Infof("Creating table %s", aws.StringValue(r.CreateTableInput.TableName))
 		if err := c.createTable(r.TableInput); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if r.UpdateTTLInput != nil {
+		c.Log.Infof("Updating TTL for table %s", aws.StringValue(r.UpdateTTLInput.TableName))
 		if err := c.updateTTL(r.UpdateTTLInput); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if r.UpdateTableInput != nil {
-		if err := c.updateTable(r.TableInput, r.UpdateTableInput); err != nil {
-			errs = append(errs, err)
+	if len(r.UpdateTableInput) > 0 {
+		for _, input := range r.UpdateTableInput {
+			c.Log.Infof("Updating table %s", aws.StringValue(input.TableName))
+			if err := c.updateTable(r.TableInput, input); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errs
@@ -198,6 +219,11 @@ func (c *Controller) compare(tbl TableInfo) (*ValidationResult, error) {
 
 	// Table exists, compare table description
 	input := CreateTableInput(tbl, c.env)
+
+	if d := DiffAttributeDefinitions(desc.AttributeDefinitions, input.AttributeDefinitions); len(d) > 0 {
+		diff = fmt.Sprintf("Attribute Definition: %v", d)
+	}
+
 	d := DiffTableDesc(desc, input)
 	if len(d) > 0 {
 		// Table descriptions mismatch
@@ -211,24 +237,26 @@ func (c *Controller) compare(tbl TableInfo) (*ValidationResult, error) {
 		WriteCapacityUnits: desc.ProvisionedThroughput.WriteCapacityUnits,
 	}, input.ProvisionedThroughput)
 	if len(diffPt) > 0 {
-		diff = fmt.Sprintf("Throughput: %v%v", diff, diffPt)
-		result.UpdateTableInput = UpdateTableInputBase(tbl, c.env)
-		result.UpdateTableInput.ProvisionedThroughput = input.ProvisionedThroughput
+		diff = fmt.Sprintf("%v, Throughput: %v", diff, diffPt)
+		updateTableInput := UpdateTableInputBase(tbl, c.env)
+		updateTableInput.ProvisionedThroughput = input.ProvisionedThroughput
+		result.UpdateTableInput = append(result.UpdateTableInput, updateTableInput)
 	}
 
 	// Compare GSI
 	diffGSI := DiffGSI(desc.GlobalSecondaryIndexes, input.GlobalSecondaryIndexes)
 	if diffGSI != nil {
 		if len(diffGSI.Diff) > 0 {
-			diff = fmt.Sprintf("GSI: %v%v", diff, diffGSI.Diff)
+			diff = fmt.Sprintf("%v, GSI: %v", diff, diffGSI.Diff)
 			if len(diffGSI.GSIInput) == 0 {
 				// GSI can not be updated by Migrate
 				canMigrate = false
 			}
-			if result.UpdateTableInput == nil {
-				result.UpdateTableInput = UpdateTableInputBase(tbl, c.env)
+			for _, input := range diffGSI.GSIInput {
+				updateTableInput := UpdateTableInputBase(tbl, c.env)
+				updateTableInput.GlobalSecondaryIndexUpdates = append(updateTableInput.GlobalSecondaryIndexUpdates, input)
+				result.UpdateTableInput = append(result.UpdateTableInput, updateTableInput)
 			}
-			result.UpdateTableInput.GlobalSecondaryIndexUpdates = diffGSI.GSIInput
 		}
 	}
 
@@ -255,7 +283,7 @@ func (c *Controller) compare(tbl TableInfo) (*ValidationResult, error) {
 		}
 		d := DiffTTL(ttl, expected)
 		if len(d) > 0 {
-			diff = fmt.Sprintf("TTL: %v%v", diff, d)
+			diff = fmt.Sprintf("%v, TTL: %v", diff, d)
 			result.UpdateTTLInput = NewUpdateTimeToLiveInput(tbl, c.env, tbl.TTL)
 		}
 	}
@@ -308,8 +336,21 @@ func (c *Controller) updateTTL(input *dynamodb.UpdateTimeToLiveInput) error {
 }
 
 func (c *Controller) updateTable(ti TableInfo, input *dynamodb.UpdateTableInput) error {
-	if _, err := c.DynamoDB.UpdateTable(input); err != nil {
+	for i := 0; i < MultiIndexUpdateRetryAttempts; i++ {
+		_, err := c.DynamoDB.UpdateTable(input)
+		if err == nil {
+			return nil
+		}
+		// error not nil
+		aerr, ok := err.(awserr.Error)
+		if ok {
+			if !(aerr.Code() == dynamodb.ErrCodeLimitExceededException) {
+				return err
+			}
+			time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
+			continue
+		}
 		return err
 	}
-	return nil
+	return ErrRequestWithMaxRetry
 }
