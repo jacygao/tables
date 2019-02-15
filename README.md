@@ -37,6 +37,12 @@ for _, res := range migrationResult {
 }
 ```
 
+### Reset Tables
+```go
+// Reset removes all configured tables from DynamoDB
+resetResults := controller.Reset()
+```
+
 ### Console Output
 The sample output shows the following information:
 - table escrow is missing
