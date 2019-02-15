@@ -59,6 +59,11 @@ type MigrationResult struct {
 	Errors []error
 }
 
+type ResetResult struct {
+	TableName string
+	Error     error
+}
+
 // NewController initialises a new table schema controller
 // NewController loads the config file and retrieves table schema for comparison.
 // env represents Environment which is used as table prefix
@@ -156,6 +161,29 @@ func (c *Controller) Migrate(results []*ValidationResult) []*MigrationResult {
 	wg.Wait()
 
 	return ms
+}
+
+func (c *Controller) Reset() []ResetResult {
+	rs := make([]ResetResult, len(c.Tables))
+	var wg sync.WaitGroup
+	for i, tbl := range c.Tables {
+		c.Log.Infof("Processing table %s", tbl.TableName)
+		wg.Add(1)
+		go func(i int, tbl TableInfo) {
+			defer wg.Done()
+			err := c.deleteTable(withPrefix(c.env, tbl.Title, tbl.TableName))
+			rs[i] = ResetResult{
+				TableName: tbl.TableName,
+				Error:     err,
+			}
+			if err != nil {
+				c.Log.Infof("Remove table [%s] with errors: %s", tbl.TableName, err.Error())
+			}
+		}(i, tbl)
+	}
+	wg.Wait()
+
+	return rs
 }
 
 func (c *Controller) migrate(r *ValidationResult) []error {
@@ -341,6 +369,10 @@ func (c *Controller) updateTTL(input *dynamodb.UpdateTimeToLiveInput) error {
 				time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
 				continue
 			}
+			if aerr.Code() == dynamodb.ErrCodeResourceNotFoundException {
+				time.Sleep(MultiIndexUpdateRetryInterval * time.Second)
+				continue
+			}
 			return err
 		}
 		return err
@@ -370,4 +402,13 @@ func (c *Controller) updateTable(ti TableInfo, input *dynamodb.UpdateTableInput)
 		return err
 	}
 	return ErrRequestWithMaxRetry
+}
+
+func (c *Controller) deleteTable(tableName string) error {
+	if _, err := c.DynamoDB.DeleteTable(&dynamodb.DeleteTableInput{
+		TableName: aws.String(tableName),
+	}); err != nil {
+		return err
+	}
+	return nil
 }
