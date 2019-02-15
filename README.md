@@ -1,5 +1,5 @@
 ## Overview
-Package tables is an useful tool to validate, migrate and reset table schema for DynamoDB.
+Package tables is a useful tool to validate, migrate and reset table schema for DynamoDB.
 
 ## Basics
 ### Configuration
